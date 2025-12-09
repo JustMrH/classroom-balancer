@@ -1,0 +1,533 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { Plus, Trash2, Users, Save, BarChart3, RefreshCw, Lock, Unlock, Download } from 'lucide-react';
+
+// --- Constants & Options ---
+const GENDER_OPTS = ['M', 'F', 'X'];
+const RACE_OPTS = ['White', 'Black', 'Hispanic', 'Asian', 'Multi', 'Other'];
+const SPED_OPTS = ['No', 'Yes'];
+const MLL_OPTS = ['No', 'Yes'];
+
+const TABS = {
+  SETUP: 'setup',
+  ROSTER: 'roster',
+  RESULTS: 'results'
+};
+
+// --- Helper: Generate ID ---
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+export default function ClassroomBalancer() {
+  const [activeTab, setActiveTab] = useState(TABS.SETUP);
+  
+  // --- State: Classrooms ---
+  const [classrooms, setClassrooms] = useState([
+    { id: 'c1', name: '101 - Mrs. Smith', isSped: true, isMll: false },
+    { id: 'c2', name: '102 - Mr. Jones', isSped: false, isMll: true },
+    { id: 'c3', name: '103 - Ms. Davis', isSped: false, isMll: false },
+  ]);
+
+  // --- State: Students ---
+  const [students, setStudents] = useState([]);
+
+  // --- Actions: Classrooms ---
+  const addClassroom = () => {
+    setClassrooms([...classrooms, { id: generateId(), name: 'New Room', isSped: false, isMll: false }]);
+  };
+
+  const updateClassroom = (id, field, value) => {
+    setClassrooms(classrooms.map(c => c.id === id ? { ...c, [field]: value } : c));
+  };
+
+  const removeClassroom = (id) => {
+    setClassrooms(classrooms.filter(c => c.id !== id));
+    // Also reset assignments for this deleted room
+    setStudents(students.map(s => s.lockedRoomId === id ? { ...s, lockedRoomId: '' } : s));
+  };
+
+  // --- Actions: Students ---
+  const addStudent = () => {
+    setStudents([...students, {
+      id: generateId(),
+      name: '',
+      gender: 'M',
+      race: 'White',
+      isSped: 'No',
+      isMll: 'No',
+      lockedRoomId: '', // If user manually assigns
+      assignedRoomId: '' // Calculated by algo
+    }]);
+  };
+
+  const updateStudent = (id, field, value) => {
+    setStudents(students.map(s => s.id === id ? { ...s, [field]: value } : s));
+  };
+
+  const removeStudent = (id) => {
+    setStudents(students.filter(s => s.id !== id));
+  };
+
+  const generateSampleData = () => {
+    const firstNames = ['Liam', 'Olivia', 'Noah', 'Emma', 'Oliver', 'Ava', 'Elijah', 'Charlotte', 'James', 'Sophia', 'Lucas', 'Mia', 'Mason', 'Amelia', 'Ethan', 'Harper'];
+    const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis', 'Rodriguez', 'Martinez'];
+    
+    const newStudents = Array.from({ length: 50 }).map(() => ({
+      id: generateId(),
+      name: `${firstNames[Math.floor(Math.random() * firstNames.length)]} ${lastNames[Math.floor(Math.random() * lastNames.length)]}`,
+      gender: Math.random() > 0.5 ? 'M' : 'F',
+      race: RACE_OPTS[Math.floor(Math.random() * RACE_OPTS.length)],
+      isSped: Math.random() > 0.85 ? 'Yes' : 'No', // 15% SpEd
+      isMll: Math.random() > 0.9 ? 'Yes' : 'No',   // 10% MLL
+      lockedRoomId: '',
+      assignedRoomId: ''
+    }));
+    setStudents(newStudents);
+  };
+
+  // --- The Balancing Algorithm ---
+  const runAutoBalance = () => {
+    // 1. Reset auto-assigned IDs, keep locked ones
+    let workingRoster = students.map(s => ({
+      ...s,
+      assignedRoomId: s.lockedRoomId || ''
+    }));
+
+    // 2. Separate Locked vs Unassigned
+    const unassigned = workingRoster.filter(s => !s.lockedRoomId);
+    
+    // 3. Sort unassigned students by "Difficulty" (SpEd/MLL first)
+    // This ensures students with specific needs get first dibs on valid rooms
+    unassigned.sort((a, b) => {
+      const scoreA = (a.isSped === 'Yes' ? 2 : 0) + (a.isMll === 'Yes' ? 1 : 0);
+      const scoreB = (b.isSped === 'Yes' ? 2 : 0) + (b.isMll === 'Yes' ? 1 : 0);
+      return scoreB - scoreA;
+    });
+
+    // 4. Distribute
+    unassigned.forEach(student => {
+      // Find valid rooms
+      let validRooms = classrooms.filter(c => {
+        if (student.isSped === 'Yes' && !c.isSped) return false;
+        if (student.isMll === 'Yes' && !c.isMll) return false;
+        return true;
+      });
+
+      // If no valid rooms found matching criteria (e.g. no SpEd rooms left), fallback to ALL rooms
+      if (validRooms.length === 0) validRooms = [...classrooms];
+
+      // Find the "Best" room among valid ones
+      // Criteria: Lowest count of student's specific attributes to ensure diversity
+      
+      // Calculate current stats for valid rooms based on ALREADY assigned (or locked) students
+      const roomScores = validRooms.map(room => {
+        const currentStudents = workingRoster.filter(s => s.assignedRoomId === room.id);
+        
+        const countTotal = currentStudents.length;
+        const countGender = currentStudents.filter(s => s.gender === student.gender).length;
+        const countRace = currentStudents.filter(s => s.race === student.race).length;
+        
+        // Weighted Score: We want to minimize this score
+        // High priority: Keep total counts even
+        // Medium priority: Keep gender balanced
+        // Low priority: Keep race balanced
+        const score = (countTotal * 100) + (countGender * 10) + (countRace * 1);
+        
+        return { room, score };
+      });
+
+      // Sort by lowest score
+      roomScores.sort((a, b) => a.score - b.score);
+
+      // Assign to winner
+      const winnerId = roomScores[0].room.id;
+      
+      // Update the working roster for next iteration
+      const index = workingRoster.findIndex(s => s.id === student.id);
+      workingRoster[index].assignedRoomId = winnerId;
+    });
+
+    setStudents(workingRoster);
+    setActiveTab(TABS.RESULTS);
+  };
+
+  // --- Statistics Calculation ---
+  const getClassStats = (classId) => {
+    const classStudents = students.filter(s => (s.assignedRoomId || s.lockedRoomId) === classId);
+    const total = classStudents.length;
+    const boys = classStudents.filter(s => s.gender === 'M').length;
+    const girls = classStudents.filter(s => s.gender === 'F').length;
+    const sped = classStudents.filter(s => s.isSped === 'Yes').length;
+    const mll = classStudents.filter(s => s.isMll === 'Yes').length;
+    
+    // Race breakdown
+    const raceCounts = {};
+    RACE_OPTS.forEach(r => raceCounts[r] = 0);
+    classStudents.forEach(s => {
+      if(raceCounts[s.race] !== undefined) raceCounts[s.race]++;
+    });
+
+    return { total, boys, girls, sped, mll, raceCounts, classStudents };
+  };
+
+  // --- Render Components ---
+
+  const renderSetup = () => (
+    <div className="space-y-6">
+      <div className="bg-white p-6 rounded-lg shadow-sm border border-slate-200">
+        <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
+          <Users size={20} />
+          Step 1: Define Homerooms
+        </h2>
+        <p className="text-slate-600 mb-4">
+          Add your homerooms below. Check <strong>SpEd</strong> if the room has support for Special Education (Inclusion). Check <strong>MLL</strong> if it supports Multilingual Learners.
+        </p>
+        
+        <div className="space-y-3">
+          {classrooms.map((room, idx) => (
+            <div key={room.id} className="flex flex-col md:flex-row gap-3 items-start md:items-center bg-slate-50 p-3 rounded border border-slate-200">
+              <span className="font-mono text-slate-400 w-8">{idx + 1}.</span>
+              <input 
+                type="text" 
+                value={room.name}
+                onChange={(e) => updateClassroom(room.id, 'name', e.target.value)}
+                className="flex-1 p-2 border border-slate-300 rounded focus:ring-2 focus:ring-blue-500 outline-none"
+                placeholder="Room Name / Teacher"
+              />
+              <div className="flex items-center gap-4">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input 
+                    type="checkbox" 
+                    checked={room.isSped}
+                    onChange={(e) => updateClassroom(room.id, 'isSped', e.target.checked)}
+                    className="w-4 h-4 text-blue-600"
+                  />
+                  <span className="text-sm font-medium text-slate-700">SpEd Incl.</span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input 
+                    type="checkbox" 
+                    checked={room.isMll}
+                    onChange={(e) => updateClassroom(room.id, 'isMll', e.target.checked)}
+                    className="w-4 h-4 text-blue-600"
+                  />
+                  <span className="text-sm font-medium text-slate-700">MLL/ESL</span>
+                </label>
+                <button 
+                  onClick={() => removeClassroom(room.id)}
+                  className="p-2 text-red-500 hover:bg-red-50 rounded"
+                  title="Remove Classroom"
+                >
+                  <Trash2 size={18} />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+        
+        <button 
+          onClick={addClassroom}
+          className="mt-4 flex items-center gap-2 text-blue-600 font-medium hover:bg-blue-50 px-4 py-2 rounded transition"
+        >
+          <Plus size={18} /> Add Classroom
+        </button>
+      </div>
+      
+      <div className="flex justify-end">
+        <button 
+          onClick={() => setActiveTab(TABS.ROSTER)}
+          className="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 shadow-sm transition"
+        >
+          Next: Add Students &rarr;
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderRoster = () => (
+    <div className="space-y-4 h-full flex flex-col">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+        <div>
+          <h2 className="text-xl font-bold text-slate-800">Step 2: Student Roster</h2>
+          <p className="text-sm text-slate-500">Total Students: {students.length}</p>
+        </div>
+        <div className="flex gap-2">
+          <button 
+            onClick={generateSampleData}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 rounded transition"
+          >
+            <RefreshCw size={16} /> Generate Sample Data
+          </button>
+          <button 
+            onClick={addStudent}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded transition"
+          >
+            <Plus size={16} /> Add Student
+          </button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-auto border border-slate-200 rounded-lg bg-white shadow-sm">
+        <table className="w-full text-left text-sm">
+          <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
+            <tr>
+              <th className="p-3 font-semibold text-slate-700 w-12">#</th>
+              <th className="p-3 font-semibold text-slate-700 min-w-[150px]">Student Name/ID</th>
+              <th className="p-3 font-semibold text-slate-700 w-24">Gender</th>
+              <th className="p-3 font-semibold text-slate-700 w-32">Race</th>
+              <th className="p-3 font-semibold text-slate-700 w-24">SpEd</th>
+              <th className="p-3 font-semibold text-slate-700 w-24">MLL</th>
+              <th className="p-3 font-semibold text-slate-700 min-w-[180px]">
+                Pre-Assign (Lock)
+                <span className="block text-xs font-normal text-slate-400">Optional</span>
+              </th>
+              <th className="p-3 w-12"></th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {students.map((student, idx) => (
+              <tr key={student.id} className="hover:bg-slate-50 group">
+                <td className="p-3 text-slate-400">{idx + 1}</td>
+                <td className="p-3">
+                  <input 
+                    type="text" 
+                    value={student.name}
+                    onChange={(e) => updateStudent(student.id, 'name', e.target.value)}
+                    className="w-full p-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 outline-none"
+                    placeholder="Name"
+                  />
+                </td>
+                <td className="p-3">
+                  <select 
+                    value={student.gender}
+                    onChange={(e) => updateStudent(student.id, 'gender', e.target.value)}
+                    className="w-full p-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 outline-none bg-white"
+                  >
+                    {GENDER_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
+                <td className="p-3">
+                  <select 
+                    value={student.race}
+                    onChange={(e) => updateStudent(student.id, 'race', e.target.value)}
+                    className="w-full p-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 outline-none bg-white"
+                  >
+                    {RACE_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
+                <td className="p-3">
+                  <select 
+                    value={student.isSped}
+                    onChange={(e) => updateStudent(student.id, 'isSped', e.target.value)}
+                    className={`w-full p-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 outline-none bg-white ${student.isSped === 'Yes' ? 'text-blue-700 font-bold bg-blue-50' : ''}`}
+                  >
+                    {SPED_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
+                <td className="p-3">
+                  <select 
+                    value={student.isMll}
+                    onChange={(e) => updateStudent(student.id, 'isMll', e.target.value)}
+                    className={`w-full p-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 outline-none bg-white ${student.isMll === 'Yes' ? 'text-purple-700 font-bold bg-purple-50' : ''}`}
+                  >
+                    {MLL_OPTS.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                </td>
+                <td className="p-3">
+                  <div className="relative">
+                    <select 
+                      value={student.lockedRoomId}
+                      onChange={(e) => updateStudent(student.id, 'lockedRoomId', e.target.value)}
+                      className={`w-full p-1.5 pl-8 border rounded focus:ring-1 focus:ring-blue-500 outline-none bg-white ${student.lockedRoomId ? 'border-orange-300 bg-orange-50 text-orange-800' : 'border-slate-300'}`}
+                    >
+                      <option value="">-- Auto --</option>
+                      {classrooms.map(c => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </select>
+                    <div className="absolute left-2 top-2 text-slate-400 pointer-events-none">
+                      {student.lockedRoomId ? <Lock size={14} className="text-orange-500" /> : <Unlock size={14} />}
+                    </div>
+                  </div>
+                </td>
+                <td className="p-3 text-center">
+                  <button 
+                    onClick={() => removeStudent(student.id)}
+                    className="text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition"
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {students.length === 0 && (
+              <tr>
+                <td colSpan="8" className="p-8 text-center text-slate-400 italic">
+                  No students yet. Add one manually or generate sample data.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex justify-end pt-4 gap-3">
+        <button 
+          onClick={() => setActiveTab(TABS.SETUP)}
+          className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded"
+        >
+          &larr; Back
+        </button>
+        <button 
+          onClick={runAutoBalance}
+          disabled={students.length === 0 || classrooms.length === 0}
+          className="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium hover:bg-blue-700 shadow-sm transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+        >
+          <BarChart3 size={18} /> Create Balanced Homerooms
+        </button>
+      </div>
+    </div>
+  );
+
+  const renderResults = () => (
+    <div className="space-y-6 h-full flex flex-col">
+      <div className="flex justify-between items-center bg-white p-4 rounded-lg shadow-sm border border-slate-200">
+        <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+          <Save size={20} /> Step 3: Balanced Lists
+        </h2>
+        <div className="flex gap-2">
+           <button 
+            onClick={() => setActiveTab(TABS.ROSTER)}
+            className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded"
+          >
+            Edit Roster
+          </button>
+          <button 
+            onClick={runAutoBalance}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-100 text-blue-700 font-medium rounded hover:bg-blue-200 transition"
+          >
+            <RefreshCw size={16} /> Re-Balance
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 overflow-auto pb-8">
+        {classrooms.map(classroom => {
+          const stats = getClassStats(classroom.id);
+          
+          return (
+            <div key={classroom.id} className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden">
+              <div className="p-4 bg-slate-800 text-white">
+                <div className="flex justify-between items-start">
+                  <h3 className="font-bold text-lg">{classroom.name}</h3>
+                  <span className="bg-slate-700 text-xs px-2 py-1 rounded-full">{stats.total} Students</span>
+                </div>
+                <div className="flex gap-2 mt-2">
+                  {classroom.isSped && <span className="text-xs bg-blue-500 text-white px-2 py-0.5 rounded font-medium">SpEd</span>}
+                  {classroom.isMll && <span className="text-xs bg-purple-500 text-white px-2 py-0.5 rounded font-medium">MLL</span>}
+                </div>
+              </div>
+              
+              {/* Stats Bar */}
+              <div className="bg-slate-50 p-3 grid grid-cols-2 gap-y-2 gap-x-4 text-sm border-b border-slate-100">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Boys/Girls:</span>
+                  <span className="font-medium text-slate-700">{stats.boys} / {stats.girls}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">SpEd:</span>
+                  <span className={`font-medium ${stats.sped > 0 ? 'text-blue-600' : 'text-slate-700'}`}>{stats.sped}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">MLL:</span>
+                  <span className={`font-medium ${stats.mll > 0 ? 'text-purple-600' : 'text-slate-700'}`}>{stats.mll}</span>
+                </div>
+              </div>
+
+              {/* Race Breakdown Mini-chart (Text based) */}
+              <div className="px-3 py-2 text-xs bg-slate-50 border-b border-slate-100 flex flex-wrap gap-2">
+                 {Object.entries(stats.raceCounts).map(([race, count]) => (
+                   count > 0 && (
+                     <span key={race} className="px-1.5 py-0.5 bg-slate-200 text-slate-600 rounded">
+                       {race}: {count}
+                     </span>
+                   )
+                 ))}
+              </div>
+
+              <div className="p-0 flex-1 overflow-y-auto max-h-96">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-slate-50 text-xs text-slate-500 uppercase">
+                    <tr>
+                      <th className="px-4 py-2">Name</th>
+                      <th className="px-2 py-2 w-10">Gen</th>
+                      <th className="px-2 py-2 w-10">Tags</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {stats.classStudents.map(s => (
+                      <tr key={s.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-2 text-slate-700 font-medium">
+                          {s.name || <em>Unnamed</em>}
+                          {s.lockedRoomId && <Lock size={10} className="inline ml-1 text-orange-400 mb-1"/>}
+                        </td>
+                        <td className="px-2 py-2 text-slate-500">{s.gender}</td>
+                        <td className="px-2 py-2">
+                          <div className="flex gap-1">
+                            {s.isSped === 'Yes' && <div className="w-2 h-2 rounded-full bg-blue-500" title="SpEd"></div>}
+                            {s.isMll === 'Yes' && <div className="w-2 h-2 rounded-full bg-purple-500" title="MLL"></div>}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans">
+      <div className="max-w-7xl mx-auto h-[90vh] flex flex-col">
+        {/* Header */}
+        <div className="mb-6 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-slate-800">Homeroom Creator</h1>
+            <p className="text-slate-500 mt-1">Setup classrooms, import students, and auto-balance for diversity and needs.</p>
+          </div>
+          
+          {/* Navigation */}
+          <div className="flex bg-white p-1 rounded-lg shadow-sm">
+            <button 
+              onClick={() => setActiveTab(TABS.SETUP)}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === TABS.SETUP ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-50'}`}
+            >
+              1. Setup
+            </button>
+             <button 
+              onClick={() => setActiveTab(TABS.ROSTER)}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === TABS.ROSTER ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-50'}`}
+            >
+              2. Roster
+            </button>
+             <button 
+              onClick={() => { if(students.length > 0) setActiveTab(TABS.RESULTS); }}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition ${activeTab === TABS.RESULTS ? 'bg-slate-800 text-white shadow' : 'text-slate-600 hover:bg-slate-50'}`}
+            >
+              3. Results
+            </button>
+          </div>
+        </div>
+
+        {/* Content Area */}
+        <div className="flex-1 min-h-0">
+          {activeTab === TABS.SETUP && renderSetup()}
+          {activeTab === TABS.ROSTER && renderRoster()}
+          {activeTab === TABS.RESULTS && renderResults()}
+        </div>
+      </div>
+    </div>
+  );
+}
